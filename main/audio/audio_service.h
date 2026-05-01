@@ -124,6 +124,8 @@ public:
     void EnableVoiceProcessing(bool enable);
     void EnableAudioTesting(bool enable);
     void EnableDeviceAec(bool enable);
+    void DisablePowerManagement();
+    void EnablePowerManagement();
 
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 

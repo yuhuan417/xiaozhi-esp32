@@ -9,6 +9,7 @@
 #include "led/single_led.h"
 #include "assets/lang_config.h"
 #include "power_manager.h"
+#include "network_radio.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -18,6 +19,10 @@
 
 #define TAG "XINGZHI_CUBE_1_54TFT_WIFI"
 
+static const NetworkRadio::Station RADIO_STATIONS[] = {
+    RADIO_STATION_LIST
+};
+
 class XINGZHI_CUBE_1_54TFT_WIFI : public WifiBoard {
 private:
     Button boot_button_;
@@ -26,6 +31,7 @@ private:
     SpiLcdDisplay* display_;
     PowerSaveTimer* power_save_timer_;
     PowerManager* power_manager_;
+    NetworkRadio network_radio_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
 
@@ -76,15 +82,69 @@ private:
         ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
     }
 
+    void EnterRadioMode() {
+        auto& app = Application::GetInstance();
+        auto state = app.GetDeviceState();
+
+        // Only enter from idle, speaking, or listening
+        if (state != kDeviceStateIdle &&
+            state != kDeviceStateSpeaking &&
+            state != kDeviceStateListening) {
+            return;
+        }
+
+        // Stop conversation if active
+        if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
+            app.ToggleChatState();
+        }
+
+        // Schedule radio start after state settles
+        app.Schedule([this]() {
+            Application::GetInstance().SetDeviceState(kDeviceStateNetworkRadio);
+            power_save_timer_->SetEnabled(false);
+            network_radio_.Start(0);
+            GetDisplay()->ShowNotification("📻 网络收音机");
+        });
+    }
+
+    void ExitRadioMode() {
+        network_radio_.Stop();
+        power_save_timer_->SetEnabled(true);
+        Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+        GetDisplay()->ShowNotification("对话模式");
+    }
+
     void InitializeButtons() {
+        network_radio_.SetStations(RADIO_STATIONS, sizeof(RADIO_STATIONS) / sizeof(RADIO_STATIONS[0]));
+
         boot_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
+            if (network_radio_.IsRunning()) {
+                network_radio_.NextStation();
+                return;
+            }
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
                 return;
             }
             app.ToggleChatState();
+        });
+
+        boot_button_.OnDoubleClick([this]() {
+            if (network_radio_.IsRunning()) {
+                power_save_timer_->WakeUp();
+                network_radio_.PreviousStation();
+            }
+        });
+
+        boot_button_.OnLongPress([this]() {
+            power_save_timer_->WakeUp();
+            if (network_radio_.IsRunning()) {
+                ExitRadioMode();
+            } else {
+                EnterRadioMode();
+            }
         });
 
         volume_up_button_.OnClick([this]() {
@@ -182,7 +242,7 @@ public:
         static bool last_discharging = false;
         charging = power_manager_->IsCharging();
         discharging = power_manager_->IsDischarging();
-        if (discharging != last_discharging) {
+        if (discharging != last_discharging && !network_radio_.IsRunning()) {
             power_save_timer_->SetEnabled(discharging);
             last_discharging = discharging;
         }

@@ -673,7 +673,12 @@ void Application::StopListening() {
 
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
-    
+
+    // Ignore toggle chat while in network radio mode
+    if (state == kDeviceStateNetworkRadio) {
+        return;
+    }
+
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
         return;
@@ -866,6 +871,7 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            audio_service_.EnablePowerManagement();
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -916,6 +922,13 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(false);
+            break;
+        case kDeviceStateNetworkRadio:
+            display->SetStatus("📻 网络收音机");
+            display->SetEmotion("neutral");
+            audio_service_.EnableVoiceProcessing(false);
+            audio_service_.EnableWakeWordDetection(false);
+            audio_service_.DisablePowerManagement();
             break;
         default:
             // Do nothing

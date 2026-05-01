@@ -36,10 +36,22 @@ set(SOURCES "audio/audio_codec.cc"
             "settings.cc"
             "device_state_machine.cc"
             "assets.cc"
+            "network_radio.cc"
+            $ENV{ADF_PATH}/components/audio_stream/http_stream.c
+            $ENV{ADF_PATH}/components/audio_stream/http_playlist.c
+            $ENV{ADF_PATH}/components/audio_stream/lib/hls/hls_parse.c
+            $ENV{ADF_PATH}/components/audio_stream/lib/hls/hls_playlist.c
+            $ENV{ADF_PATH}/components/audio_stream/lib/hls/line_reader.c
+            $ENV{ADF_PATH}/components/audio_stream/lib/hls/join_path.c
+            $ENV{ADF_PATH}/components/audio_stream/lib/gzip/gzip_miniz.c
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols"
+    $ENV{ADF_PATH}/components/audio_stream/include
+    $ENV{ADF_PATH}/components/audio_stream/lib/hls/include
+    $ENV{ADF_PATH}/components/audio_stream/lib/gzip/include
+)
 
 # Add board common files
 list(APPEND SOURCES
@@ -965,6 +977,8 @@ idf_component_register(SRCS ${SOURCES}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     PRIV_REQUIRES
+                        audio_pipeline
+                        esp_http_client
                         esp_pm
                         esp_psram
                         esp_netif

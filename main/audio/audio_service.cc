@@ -626,6 +626,14 @@ void AudioService::EnableDeviceAec(bool enable) {
     audio_processor_->EnableDeviceAec(enable);
 }
 
+void AudioService::DisablePowerManagement() {
+    esp_timer_stop(audio_power_timer_);
+}
+
+void AudioService::EnablePowerManagement() {
+    esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
+}
+
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
     callbacks_ = callbacks;
 }

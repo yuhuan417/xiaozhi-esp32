@@ -18,6 +18,7 @@ static const char* const STATE_STRINGS[] = {
     "activating",
     "audio_testing",
     "fatal_error",
+    "network_radio",
     "invalid_state"
 };
 
@@ -25,10 +26,10 @@ DeviceStateMachine::DeviceStateMachine() {
 }
 
 const char* DeviceStateMachine::GetStateName(DeviceState state) {
-    if (state >= 0 && state <= kDeviceStateFatalError) {
+    if (state >= 0 && state <= kDeviceStateNetworkRadio) {
         return STATE_STRINGS[state];
     }
-    return STATE_STRINGS[kDeviceStateFatalError + 1];
+    return STATE_STRINGS[kDeviceStateNetworkRadio + 1];
 }
 
 bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) const {
@@ -69,13 +70,18 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
                    to == kDeviceStateActivating;
 
         case kDeviceStateIdle:
-            // Can go to connecting, listening (manual mode), speaking, activating, upgrading, or wifi configuring
+            // Can go to connecting, listening (manual mode), speaking, activating, upgrading, wifi configuring, or network radio
             return to == kDeviceStateConnecting ||
                    to == kDeviceStateListening ||
                    to == kDeviceStateSpeaking ||
                    to == kDeviceStateActivating ||
                    to == kDeviceStateUpgrading ||
-                   to == kDeviceStateWifiConfiguring;
+                   to == kDeviceStateWifiConfiguring ||
+                   to == kDeviceStateNetworkRadio;
+
+        case kDeviceStateNetworkRadio:
+            // Can go back to idle
+            return to == kDeviceStateIdle;
 
         case kDeviceStateConnecting:
             // Can go to idle (failed) or listening (success)
