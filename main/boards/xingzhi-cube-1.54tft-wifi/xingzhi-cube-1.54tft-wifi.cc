@@ -10,12 +10,15 @@
 #include "assets/lang_config.h"
 #include "power_manager.h"
 #include "network_radio.h"
+#include "sdcard_player.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
 
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
+#include <esp_vfs_fat.h>
+#include <driver/sdspi_host.h>
 
 #define TAG "XINGZHI_CUBE_1_54TFT_WIFI"
 
@@ -32,8 +35,10 @@ private:
     PowerSaveTimer* power_save_timer_;
     PowerManager* power_manager_;
     NetworkRadio network_radio_;
+    SdCardPlayer sdcard_player_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
+    bool is_sdcard_found_ = false;
 
     void InitializePowerManager() {
         power_manager_ = new PowerManager(GPIO_NUM_38);
@@ -86,22 +91,16 @@ private:
         auto& app = Application::GetInstance();
         auto state = app.GetDeviceState();
 
-        // Only enter from idle, speaking, or listening
         if (state != kDeviceStateIdle &&
             state != kDeviceStateSpeaking &&
-            state != kDeviceStateListening) {
+            state != kDeviceStateListening &&
+            state != kDeviceStateSdCardMp3) {
             return;
         }
 
-        // Schedule radio start in main task context
         app.Schedule([this]() {
             auto& app = Application::GetInstance();
-
-            // Force-idle any active conversation (valid transitions:
-            // Speaking->Idle, Listening->Idle, Idle->Idle is no-op)
             app.SetDeviceState(kDeviceStateIdle);
-
-            // Now enter network radio
             app.SetDeviceState(kDeviceStateNetworkRadio);
             power_save_timer_->SetEnabled(false);
             network_radio_.Start(0);
@@ -116,6 +115,49 @@ private:
         GetDisplay()->ShowNotification("对话模式");
     }
 
+    void EnterSdCardMp3Mode() {
+        auto& app = Application::GetInstance();
+        auto state = app.GetDeviceState();
+
+        if (!is_sdcard_found_) {
+            GetDisplay()->ShowNotification("未检测到SD卡");
+            return;
+        }
+
+        // Enter from idle, speaking, listening, network radio, or sd card mp3 (re-entry)
+        if (state != kDeviceStateIdle &&
+            state != kDeviceStateSpeaking &&
+            state != kDeviceStateListening &&
+            state != kDeviceStateNetworkRadio &&
+            state != kDeviceStateSdCardMp3) {
+            return;
+        }
+
+        app.Schedule([this]() {
+            auto& app = Application::GetInstance();
+
+            if (network_radio_.IsRunning()) {
+                network_radio_.Stop();
+            }
+            if (sdcard_player_.IsRunning()) {
+                sdcard_player_.Stop();
+            }
+
+            app.SetDeviceState(kDeviceStateIdle);
+            app.SetDeviceState(kDeviceStateSdCardMp3);
+            power_save_timer_->SetEnabled(false);
+            sdcard_player_.Start();
+            GetDisplay()->ShowNotification("🎵 SD卡MP3");
+        });
+    }
+
+    void ExitSdCardMp3Mode() {
+        sdcard_player_.Stop();
+        power_save_timer_->SetEnabled(true);
+        Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+        GetDisplay()->ShowNotification("对话模式");
+    }
+
     void InitializeButtons() {
         network_radio_.SetStations(RADIO_STATIONS, sizeof(RADIO_STATIONS) / sizeof(RADIO_STATIONS[0]));
 
@@ -123,6 +165,10 @@ private:
             power_save_timer_->WakeUp();
             if (network_radio_.IsRunning()) {
                 network_radio_.NextStation();
+                return;
+            }
+            if (sdcard_player_.IsRunning()) {
+                sdcard_player_.Next();
                 return;
             }
             auto& app = Application::GetInstance();
@@ -134,16 +180,24 @@ private:
         });
 
         boot_button_.OnDoubleClick([this]() {
+            power_save_timer_->WakeUp();
             if (network_radio_.IsRunning()) {
-                power_save_timer_->WakeUp();
                 network_radio_.PreviousStation();
+                return;
+            }
+            if (sdcard_player_.IsRunning()) {
+                sdcard_player_.Previous();
             }
         });
 
         boot_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
+            // Three-mode cycle: 对话 → 网络电台 → SD卡MP3 → 对话
             if (network_radio_.IsRunning()) {
                 ExitRadioMode();
+                EnterSdCardMp3Mode();
+            } else if (sdcard_player_.IsRunning()) {
+                ExitSdCardMp3Mode();
             } else {
                 EnterRadioMode();
             }
@@ -208,8 +262,50 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, true));
 
-        display_ = new SpiLcdDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
+        display_ = new SpiLcdDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
             DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+    }
+
+    void InitializeSDcardSpi() {
+        spi_bus_config_t bus_cnf = {
+            .mosi_io_num = SD_CMD,
+            .miso_io_num = SD_DATA0,
+            .sclk_io_num = SD_CLK,
+            .quadwp_io_num = GPIO_NUM_NC,
+            .quadhd_io_num = GPIO_NUM_NC,
+            .max_transfer_sz = 400000,
+        };
+
+        esp_err_t err = spi_bus_initialize(SD_SPI_HOST, &bus_cnf, SPI_DMA_CH_AUTO);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "SD SPI bus init failed: %s", esp_err_to_name(err));
+            return;
+        }
+
+        sdspi_device_config_t slot_cnf = {
+            .host_id = SD_SPI_HOST,
+            .gpio_cs = SD_CS,
+            .gpio_cd = SDSPI_SLOT_NO_CD,
+            .gpio_wp = GPIO_NUM_NC,
+            .gpio_int = GPIO_NUM_NC,
+        };
+
+        esp_vfs_fat_sdmmc_mount_config_t mount_cnf = {
+            .format_if_mount_failed = false,
+            .max_files = 5,
+            .allocation_unit_size = 16 * 1024,
+        };
+
+        sdmmc_card_t* card = nullptr;
+        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+        err = esp_vfs_fat_sdspi_mount(SD_MOUNT_POINT, &host, &slot_cnf, &mount_cnf, &card);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "SD card mount failed: %s", esp_err_to_name(err));
+            is_sdcard_found_ = false;
+            return;
+        }
+        ESP_LOGI(TAG, "SD card mounted at %s", SD_MOUNT_POINT);
+        is_sdcard_found_ = true;
     }
 
 public:
@@ -222,6 +318,7 @@ public:
         InitializeSpi();
         InitializeButtons();
         InitializeSt7789Display();
+        InitializeSDcardSpi();
         GetBacklight()->RestoreBrightness();
     }
 
@@ -244,7 +341,7 @@ public:
         static bool last_discharging = false;
         charging = power_manager_->IsCharging();
         discharging = power_manager_->IsDischarging();
-        if (discharging != last_discharging && !network_radio_.IsRunning()) {
+        if (discharging != last_discharging && !network_radio_.IsRunning() && !sdcard_player_.IsRunning()) {
             power_save_timer_->SetEnabled(discharging);
             last_discharging = discharging;
         }

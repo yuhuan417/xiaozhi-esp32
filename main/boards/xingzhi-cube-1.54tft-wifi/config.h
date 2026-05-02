@@ -33,10 +33,17 @@
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_13
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 
+// SD card (SPI mode)
+#define SD_DATA0       GPIO_NUM_1
+#define SD_CMD         GPIO_NUM_2
+#define SD_CLK         GPIO_NUM_3
+#define SD_CS          GPIO_NUM_46
+#define SD_MOUNT_POINT "/sdcard"
+#define SD_SPI_HOST    SPI2_HOST
+
 // Network radio station list
 #define RADIO_STATION_LIST \
     {"上海动感101", "http://open.ls.qingting.fm/live/274/64k.m3u8?format=aac"}, \
-    {"怀集音乐之声", "http://open.ls.qingting.fm/live/4804/64k.m3u8?format=aac"}, \
     {"古典音乐", "http://ls.qingting.fm/live/3412131.m3u8?bitrate=64"}
 
 #endif // _BOARD_CONFIG_H_

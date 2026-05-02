@@ -19,6 +19,7 @@ static const char* const STATE_STRINGS[] = {
     "audio_testing",
     "fatal_error",
     "network_radio",
+    "sdcard_mp3",
     "invalid_state"
 };
 
@@ -70,16 +71,22 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
                    to == kDeviceStateActivating;
 
         case kDeviceStateIdle:
-            // Can go to connecting, listening (manual mode), speaking, activating, upgrading, wifi configuring, or network radio
+            // Can go to connecting, listening (manual mode), speaking, activating, upgrading, wifi configuring, network radio, or SD card MP3
             return to == kDeviceStateConnecting ||
                    to == kDeviceStateListening ||
                    to == kDeviceStateSpeaking ||
                    to == kDeviceStateActivating ||
                    to == kDeviceStateUpgrading ||
                    to == kDeviceStateWifiConfiguring ||
-                   to == kDeviceStateNetworkRadio;
+                   to == kDeviceStateNetworkRadio ||
+                   to == kDeviceStateSdCardMp3;
 
         case kDeviceStateNetworkRadio:
+            // Can go back to idle or cycle to SD card MP3
+            return to == kDeviceStateIdle ||
+                   to == kDeviceStateSdCardMp3;
+
+        case kDeviceStateSdCardMp3:
             // Can go back to idle
             return to == kDeviceStateIdle;
 

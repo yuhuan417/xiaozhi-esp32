@@ -5,11 +5,6 @@
 #include <freertos/task.h>
 #include <atomic>
 #include <vector>
-#include <string>
-
-#include "audio_element.h"
-#include "audio_pipeline.h"
-#include "http_stream.h"
 
 class NetworkRadio {
 public:
