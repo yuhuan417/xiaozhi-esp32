@@ -10,8 +10,6 @@
 #include "audio_element.h"
 #include "audio_pipeline.h"
 #include "http_stream.h"
-#include "esp_audio_simple_dec.h"
-#include "esp_ae_rate_cvt.h"
 
 class NetworkRadio {
 public:

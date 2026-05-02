@@ -1,168 +1,17 @@
 #include "network_radio.h"
 #include "board.h"
 #include "display/display.h"
-#include "audio/codecs/no_audio_codec.h"
+#include "audio/audio_codec.h"
 
 #include <esp_log.h>
+#include <esp_ae_types.h>
 #include <esp_ae_rate_cvt.h>
+#include <esp_audio_types.h>
+#include <aac_decoder.h>
 #include <cmath>
 #include <cstring>
 
 #define TAG "NetworkRadio"
-
-static const int PCM_BUFFER_SIZE = 4096;
-
-// Context passed to the AAC decoder element via audio_element_setdata
-struct AacDecoderCtx {
-    esp_audio_simple_dec_handle_t decoder;
-    esp_ae_rate_cvt_handle_t rate_cvt;
-    int stream_rate;
-    int stream_ch;
-    int output_rate;
-    std::vector<uint8_t> pcm_buf;
-    std::vector<int16_t> resample_buf;
-    bool first_frame;
-};
-
-// AAC decoder element callbacks
-static esp_err_t aac_open(audio_element_handle_t self) {
-    auto* ctx = (AacDecoderCtx*)audio_element_getdata(self);
-    if (!ctx) return ESP_FAIL;
-
-    ctx->first_frame = true;
-    ctx->stream_rate = 0;
-    ctx->stream_ch = 0;
-    ctx->rate_cvt = nullptr;
-    ctx->pcm_buf.resize(PCM_BUFFER_SIZE * sizeof(int16_t));
-    ctx->resample_buf.resize(PCM_BUFFER_SIZE);
-
-    esp_audio_simple_dec_cfg_t cfg = {};
-    cfg.dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_AAC;
-    cfg.dec_cfg = nullptr;
-    cfg.cfg_size = 0;
-    cfg.use_frame_dec = false;
-
-    esp_audio_err_t ret = esp_audio_simple_dec_open(&cfg, &ctx->decoder);
-    if (ret != ESP_AUDIO_ERR_OK) {
-        ESP_LOGE(TAG, "Failed to open AAC decoder: %d", ret);
-        return ESP_FAIL;
-    }
-    return ESP_OK;
-}
-
-static audio_element_err_t aac_process(audio_element_handle_t self, char *el_buffer, int el_buf_len) {
-    // Note: ADF convention — positive return = bytes produced, negative = audio_element_err_t
-    auto* ctx = (AacDecoderCtx*)audio_element_getdata(self);
-    if (!ctx || !ctx->decoder) return AEL_PROCESS_FAIL;
-
-    esp_audio_simple_dec_raw_t raw = {};
-    raw.buffer = (uint8_t*)el_buffer;
-    raw.len = (uint32_t)el_buf_len;
-    raw.eos = false;
-
-    while (raw.consumed < raw.len) {
-        esp_audio_simple_dec_out_t frame = {};
-        frame.buffer = ctx->pcm_buf.data();
-        frame.len = (uint32_t)ctx->pcm_buf.size();
-
-        esp_audio_err_t ret = esp_audio_simple_dec_process(ctx->decoder, &raw, &frame);
-        if (ret != ESP_AUDIO_ERR_OK && ret != ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
-            return AEL_PROCESS_FAIL;
-        }
-
-        if (frame.decoded_size == 0) continue;
-
-        int total = (int)(frame.decoded_size / sizeof(int16_t));
-
-        // Detect stream format from first frame
-        if (ctx->first_frame) {
-            esp_audio_simple_dec_info_t info;
-            if (esp_audio_simple_dec_get_info(ctx->decoder, &info) == ESP_AUDIO_ERR_OK) {
-                ctx->stream_rate = (int)info.sample_rate;
-                ctx->stream_ch = (int)info.channel;
-                ESP_LOGI(TAG, "Stream: %d Hz, %d ch", ctx->stream_rate, ctx->stream_ch);
-
-                if (ctx->stream_rate != ctx->output_rate && ctx->stream_rate > 0) {
-                    esp_ae_rate_cvt_cfg_t rcfg = {};
-                    rcfg.src_rate = (uint32_t)ctx->stream_rate;
-                    rcfg.dest_rate = (uint32_t)ctx->output_rate;
-                    rcfg.channel = (uint8_t)ctx->stream_ch;
-                    rcfg.bits_per_sample = 16;
-                    rcfg.complexity = 1;
-                    rcfg.perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED;
-                    esp_ae_rate_cvt_open(&rcfg, &ctx->rate_cvt);
-                }
-            }
-            ctx->first_frame = false;
-        }
-
-        // Resample or pass-through
-        int16_t* out_data;
-        int out_samples;
-
-        if (ctx->rate_cvt && ctx->stream_ch > 0) {
-            uint32_t in_samples = (uint32_t)total / ctx->stream_ch;
-            uint32_t out_s = (uint32_t)ctx->resample_buf.size();
-            esp_ae_rate_cvt_process(ctx->rate_cvt,
-                (esp_ae_sample_t)ctx->pcm_buf.data(), in_samples,
-                (esp_ae_sample_t)ctx->resample_buf.data(), &out_s);
-            out_data = ctx->resample_buf.data();
-            out_samples = (int)out_s;
-        } else {
-            out_data = (int16_t*)ctx->pcm_buf.data();
-            out_samples = total;
-        }
-
-        // Mix stereo to mono if needed
-        if (ctx->stream_ch == 2) {
-            int mono_samples = out_samples / 2;
-            for (int i = 0; i < mono_samples; i++) {
-                int32_t mixed = (int32_t)out_data[i * 2] + out_data[i * 2 + 1];
-                out_data[i] = (int16_t)(mixed / 2);
-            }
-            out_samples = mono_samples;
-        }
-
-        int output_bytes = out_samples * sizeof(int16_t);
-        if (output_bytes > 0) {
-            memcpy(el_buffer, out_data, output_bytes);
-            return (audio_element_err_t)output_bytes;
-        }
-    }
-
-    return (audio_element_err_t)0;
-}
-
-static esp_err_t aac_close(audio_element_handle_t self) {
-    auto* ctx = (AacDecoderCtx*)audio_element_getdata(self);
-    if (ctx) {
-        if (ctx->decoder) {
-            esp_audio_simple_dec_close(ctx->decoder);
-            ctx->decoder = nullptr;
-        }
-        if (ctx->rate_cvt) {
-            esp_ae_rate_cvt_close(ctx->rate_cvt);
-            ctx->rate_cvt = nullptr;
-        }
-    }
-    return ESP_OK;
-}
-
-static esp_err_t aac_destroy(audio_element_handle_t self) {
-    return ESP_OK;
-}
-
-// Write callback for the output element: routes PCM data to the audio codec
-static audio_element_err_t codec_output_write(audio_element_handle_t self, char *buffer, int len, TickType_t ticks_to_wait, void *context) {
-    if (!context || len <= 0) return AEL_IO_FAIL;
-
-    auto* codec = (AudioCodec*)context;
-    int samples = len / (int)sizeof(int16_t);
-    std::vector<int16_t> pcm(samples);
-    memcpy(pcm.data(), buffer, len);
-    codec->OutputData(pcm);
-    return (audio_element_err_t)len;
-}
 
 NetworkRadio::NetworkRadio()
     : task_handle_(nullptr)
@@ -197,7 +46,7 @@ void NetworkRadio::Start(int station_index) {
         radio->running_ = false;
         radio->task_handle_ = nullptr;
         vTaskDelete(nullptr);
-    }, "radio_task", 4096, this, 5, &task_handle_);
+    }, "radio_task", 6 * 1024, this, 5, &task_handle_);
 
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create radio task");
@@ -242,9 +91,10 @@ void NetworkRadio::TaskLoop() {
     auto codec = Board::GetInstance().GetAudioCodec();
     codec->EnableOutput(true);
 
+    int output_rate = codec->output_sample_rate();
+
     // Play a short beep to verify audio output path
     {
-        int output_rate = codec->output_sample_rate();
         float duration = 0.3f;
         float freq = 880.0f;
         int total_samples = (int)(output_rate * duration);
@@ -255,8 +105,6 @@ void NetworkRadio::TaskLoop() {
         codec->OutputData(beep);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-
-    int output_rate = codec->output_sample_rate();
 
     while (running_) {
         if (switch_requested_) {
@@ -279,7 +127,7 @@ void NetworkRadio::TaskLoop() {
 
         ShowStationInfo();
 
-        // Build ADF pipeline: http_stream -> aac_decoder -> codec_output
+        // Build pipeline: http_stream -> aac_decoder
         audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
         audio_pipeline_handle_t pipeline = audio_pipeline_init(&pipeline_cfg);
         if (!pipeline) {
@@ -288,7 +136,6 @@ void NetworkRadio::TaskLoop() {
             continue;
         }
 
-        // HTTP/HLS stream element
         http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
         http_cfg.enable_playlist_parser = true;
         http_cfg.type = AUDIO_STREAM_READER;
@@ -302,70 +149,121 @@ void NetworkRadio::TaskLoop() {
         }
         audio_element_set_uri(http, playlist_url);
 
-        // AAC decoder element (custom)
-        AacDecoderCtx aac_ctx = {};
-        aac_ctx.output_rate = output_rate;
-
-        audio_element_cfg_t aac_cfg = DEFAULT_AUDIO_ELEMENT_CONFIG();
-        aac_cfg.open = aac_open;
-        aac_cfg.process = aac_process;
-        aac_cfg.close = aac_close;
-        aac_cfg.destroy = aac_destroy;
-        aac_cfg.buffer_len = PCM_BUFFER_SIZE * (int)sizeof(int16_t);
-        aac_cfg.task_stack = 4096;
-        aac_cfg.tag = "aac";
-        audio_element_handle_t aac = audio_element_init(&aac_cfg);
+        aac_decoder_cfg_t aac_cfg = DEFAULT_AAC_DECODER_CONFIG();
+        aac_cfg.plus_enable = true;
+        aac_cfg.out_rb_size = 32 * 1024;
+        audio_element_handle_t aac = aac_decoder_init(&aac_cfg);
         if (!aac) {
-            ESP_LOGE(TAG, "Failed to create aac element");
+            ESP_LOGE(TAG, "Failed to create aac_decoder");
             audio_element_deinit(http);
             audio_pipeline_deinit(pipeline);
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
         }
-        audio_element_setdata(aac, &aac_ctx);
 
-        // Output element (custom write callback)
-        audio_element_cfg_t out_cfg = DEFAULT_AUDIO_ELEMENT_CONFIG();
-        out_cfg.buffer_len = PCM_BUFFER_SIZE * (int)sizeof(int16_t);
-        out_cfg.task_stack = 4096;
-        out_cfg.tag = "out";
-        audio_element_handle_t out = audio_element_init(&out_cfg);
-        if (!out) {
-            ESP_LOGE(TAG, "Failed to create output element");
-            audio_element_deinit(aac);
-            audio_element_deinit(http);
-            audio_pipeline_deinit(pipeline);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            continue;
-        }
-        audio_element_set_write_cb(out, codec_output_write, codec);
-
-        // Register and link
         audio_pipeline_register(pipeline, http, "http");
         audio_pipeline_register(pipeline, aac, "aac");
-        audio_pipeline_register(pipeline, out, "out");
 
-        const char* link_tag[3] = {"http", "aac", "out"};
-        audio_pipeline_link(pipeline, link_tag, 3);
+        const char* link_tag[2] = {"http", "aac"};
+        audio_pipeline_link(pipeline, link_tag, 2);
 
-        // Run the pipeline
-        audio_pipeline_run(pipeline);
-
-        // Wait for stop or switch request
-        while (running_ && !switch_requested_) {
-            audio_element_state_t state = audio_element_get_state(http);
-            if (state == AEL_STATE_ERROR || state == AEL_STATE_FINISHED || state == AEL_STATE_STOPPED) {
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(200));
+        // Create output ring buffer for the last element (pipeline doesn't create for last)
+        ringbuf_handle_t aac_output_rb = rb_create(audio_element_get_output_ringbuf_size(aac), 1);
+        if (aac_output_rb) {
+            audio_element_set_output_ringbuf(aac, aac_output_rb);
         }
 
-        // Tear down pipeline
-        audio_pipeline_stop(pipeline);
-        audio_pipeline_wait_for_stop(pipeline);
+        // Read PCM directly from AAC decoder output ring buffer
+        ringbuf_handle_t rb = audio_element_get_output_ringbuf(aac);
+
+        // Set up resampler (esp_ae_rate_cvt, no FIR conflict with filter_resample)
+        audio_element_info_t aac_info = {};
+        audio_element_getinfo(aac, &aac_info);
+        int src_rate = aac_info.sample_rates > 0 ? aac_info.sample_rates : 44100;
+        int src_ch = aac_info.channels > 0 ? aac_info.channels : 2;
+
+        ESP_LOGI(TAG, "AAC output: %d Hz, %d ch, resampling to %d Hz", src_rate, src_ch, output_rate);
+
+        esp_ae_rate_cvt_handle_t resampler = nullptr;
+        if (src_rate != output_rate) {
+            esp_ae_rate_cvt_cfg_t rsp_cfg;
+            memset(&rsp_cfg, 0, sizeof(rsp_cfg));
+            rsp_cfg.src_rate = src_rate;
+            rsp_cfg.dest_rate = output_rate;
+            rsp_cfg.channel = src_ch;
+            rsp_cfg.bits_per_sample = ESP_AUDIO_BIT16;
+            rsp_cfg.complexity = 2;
+            rsp_cfg.perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED;
+            auto ret = esp_ae_rate_cvt_open(&rsp_cfg, &resampler);
+            if (ret != ESP_AE_ERR_OK || !resampler) {
+                ESP_LOGE(TAG, "Failed to create resampler: %d", ret);
+            }
+        }
+
+        std::vector<int16_t> pcm_buf(8192);
+
+        // Keep restarting pipeline for each HLS segment until station switches
+        while (running_ && !switch_requested_) {
+            audio_element_set_uri(http, playlist_url);
+            audio_pipeline_run(pipeline);
+
+            while (running_ && !switch_requested_) {
+                int bytes_read = rb_read(rb, (char*)pcm_buf.data(), pcm_buf.size() * sizeof(int16_t), pdMS_TO_TICKS(200));
+                if (bytes_read <= 0) {
+                    audio_element_state_t http_state = audio_element_get_state(http);
+                    audio_element_state_t aac_state = audio_element_get_state(aac);
+                    if (http_state == AEL_STATE_ERROR || http_state == AEL_STATE_FINISHED || http_state == AEL_STATE_STOPPED ||
+                        aac_state == AEL_STATE_ERROR || aac_state == AEL_STATE_FINISHED || aac_state == AEL_STATE_STOPPED) {
+                        break;
+                    }
+                    continue;
+                }
+
+                int samples = bytes_read / (int)sizeof(int16_t);
+
+                // Resample if needed
+                int16_t* src_data = pcm_buf.data();
+                std::vector<int16_t> resampled;
+                if (resampler) {
+                    uint32_t in_samples = samples / src_ch;
+                    uint32_t out_samples = 0;
+                    esp_ae_rate_cvt_get_max_out_sample_num(resampler, in_samples, &out_samples);
+                    resampled.resize(out_samples * src_ch);
+                    uint32_t actual = out_samples;
+                    esp_ae_rate_cvt_process(resampler, (esp_ae_sample_t)src_data, in_samples,
+                                           (esp_ae_sample_t)resampled.data(), &actual);
+                    resampled.resize(actual * src_ch);
+                    src_data = resampled.data();
+                    samples = actual * src_ch;
+                }
+
+                // Mix stereo to mono
+                if (src_ch == 2) {
+                    std::vector<int16_t> mono(samples / 2);
+                    for (int i = 0; i < samples / 2; i++) {
+                        int32_t mixed = (int32_t)src_data[i * 2] + src_data[i * 2 + 1];
+                        mono[i] = (int16_t)(mixed / 2);
+                    }
+                    codec->OutputData(mono);
+                } else {
+                    std::vector<int16_t> out(src_data, src_data + samples);
+                    codec->OutputData(out);
+                }
+            }
+
+            // Stop and wait before restart (for next HLS segment or station switch)
+            audio_pipeline_stop(pipeline);
+            audio_pipeline_wait_for_stop(pipeline);
+        }
+
+        if (resampler) {
+            esp_ae_rate_cvt_close(resampler);
+        }
         audio_pipeline_deinit(pipeline);
 
-        vTaskDelay(pdMS_TO_TICKS(500));
+        if (aac_output_rb) {
+            rb_destroy(aac_output_rb);
+        }
     }
 
     codec->EnableOutput(false);

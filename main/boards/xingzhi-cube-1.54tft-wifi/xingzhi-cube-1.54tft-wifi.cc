@@ -93,14 +93,16 @@ private:
             return;
         }
 
-        // Stop conversation if active
-        if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
-            app.ToggleChatState();
-        }
-
-        // Schedule radio start after state settles
+        // Schedule radio start in main task context
         app.Schedule([this]() {
-            Application::GetInstance().SetDeviceState(kDeviceStateNetworkRadio);
+            auto& app = Application::GetInstance();
+
+            // Force-idle any active conversation (valid transitions:
+            // Speaking->Idle, Listening->Idle, Idle->Idle is no-op)
+            app.SetDeviceState(kDeviceStateIdle);
+
+            // Now enter network radio
+            app.SetDeviceState(kDeviceStateNetworkRadio);
             power_save_timer_->SetEnabled(false);
             network_radio_.Start(0);
             GetDisplay()->ShowNotification("📻 网络收音机");
