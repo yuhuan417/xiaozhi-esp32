@@ -1,4 +1,5 @@
 #include "audio_service.h"
+#include "application.h"
 #include <esp_log.h>
 #include <cstring>
 
@@ -695,9 +696,13 @@ void AudioService::CheckAndUpdateAudioPowerState() {
         codec_->EnableInput(false);
     }
     if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
-        // Keep TX clock when duplex RX is active; otherwise RX may stall on some boards.
-        if (!(codec_->duplex() && codec_->input_enabled())) {
-            codec_->EnableOutput(false);
+        // Don't auto-disable output during radio or SD card MP3 playback
+        auto state = Application::GetInstance().GetDeviceState();
+        if (state != kDeviceStateNetworkRadio && state != kDeviceStateSdCardMp3) {
+            // Keep TX clock when duplex RX is active; otherwise RX may stall on some boards.
+            if (!(codec_->duplex() && codec_->input_enabled())) {
+                codec_->EnableOutput(false);
+            }
         }
     }
     if (!codec_->input_enabled() && !codec_->output_enabled()) {

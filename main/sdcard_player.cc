@@ -213,11 +213,31 @@ void SdCardPlayer::TaskLoop() {
         if (!fp) {
             ESP_LOGE(TAG, "Failed to open file: %s", file_path);
             vTaskDelay(pdMS_TO_TICKS(1000));
-            // Advance to next file
             if (running_ && !switch_requested_) {
                 current_index_ = (current_index_ + 1) % file_list_.size();
             }
             continue;
+        }
+
+        // Skip ID3v2 tag if present
+        {
+            uint8_t id3_header[10];
+            if (fread(id3_header, 1, 10, fp) == 10 &&
+                id3_header[0] == 'I' && id3_header[1] == 'D' && id3_header[2] == '3') {
+                // Synchsafe integer: 4 bytes, each byte uses only lower 7 bits
+                uint32_t tag_size = ((uint32_t)id3_header[6] << 21) |
+                                    ((uint32_t)id3_header[7] << 14) |
+                                    ((uint32_t)id3_header[8] << 7) |
+                                    (uint32_t)id3_header[9];
+                long skip = 10 + tag_size;
+                // ID3v2.4+ may have a 10-byte footer
+                if (id3_header[5] & 0x10) skip += 10;
+                ESP_LOGI(TAG, "Skipping ID3v2 tag: %ld bytes", skip);
+                fseek(fp, skip, SEEK_SET);
+            } else {
+                // No ID3 tag, rewind to start
+                fseek(fp, 0, SEEK_SET);
+            }
         }
 
         // Open MP3 decoder
@@ -239,21 +259,30 @@ void SdCardPlayer::TaskLoop() {
 
         std::vector<uint8_t> acc_buf;
         std::vector<uint8_t> pcm_buf(8192);
+        size_t offset = 0;
         bool file_done = false;
+        int decode_count = 0, error_count = 0;
 
         while (running_ && !switch_requested_ && !file_done) {
-            uint8_t read_buf[4096];
-            size_t bytes_read = fread(read_buf, 1, sizeof(read_buf), fp);
-            if (bytes_read == 0) {
-                file_done = true;
-                break;
+            // Read more data if buffer running low
+            if (acc_buf.size() - offset < 8192) {
+                if (offset > 0) {
+                    acc_buf.erase(acc_buf.begin(), acc_buf.begin() + offset);
+                    offset = 0;
+                }
+                uint8_t read_buf[4096];
+                size_t bytes_read = fread(read_buf, 1, sizeof(read_buf), fp);
+                if (bytes_read == 0) {
+                    file_done = true;
+                    if (acc_buf.size() == 0) break;
+                } else {
+                    acc_buf.insert(acc_buf.end(), read_buf, read_buf + bytes_read);
+                }
             }
 
-            acc_buf.insert(acc_buf.end(), read_buf, read_buf + bytes_read);
-
             esp_audio_dec_in_raw_t raw = {};
-            raw.buffer = acc_buf.data();
-            raw.len = acc_buf.size();
+            raw.buffer = acc_buf.data() + offset;
+            raw.len = acc_buf.size() - offset;
 
             while (raw.len > 0 && running_ && !switch_requested_) {
                 esp_audio_dec_out_frame_t frame = {};
@@ -267,27 +296,28 @@ void SdCardPlayer::TaskLoop() {
                     continue;
                 }
                 if (mp3_ret == ESP_AUDIO_ERR_DATA_LACK || mp3_ret == ESP_AUDIO_ERR_CONTINUE) {
+                    offset = raw.buffer - acc_buf.data();
                     break;
                 }
                 if (mp3_ret != ESP_AUDIO_ERR_OK) {
-                    ESP_LOGW(TAG, "MP3 decode error: %d, consumed=%lu, len=%lu",
-                             mp3_ret, raw.consumed, raw.len);
-                    if (raw.consumed == 0) {
-                        acc_buf.erase(acc_buf.begin());
-                    } else {
-                        acc_buf.erase(acc_buf.begin(), acc_buf.begin() + raw.consumed);
-                    }
-                    break;  // Re-read buffer positions after erase
+                    error_count++;
+                    size_t skip = raw.consumed > 0 ? raw.consumed : 1;
+                    ESP_LOGW(TAG, "MP3 decode err=%d consumed=%lu offset=%zu skip=%zu",
+                             mp3_ret, raw.consumed, offset, skip);
+                    raw.buffer += skip;
+                    raw.len -= skip;
+                    offset += skip;
+                    continue;
                 }
+                decode_count++;
 
                 size_t consumed = raw.consumed;
                 raw.buffer += consumed;
                 raw.len -= consumed;
-                acc_buf.erase(acc_buf.begin(), acc_buf.begin() + consumed);
+                offset += consumed;
 
                 if (frame.decoded_size == 0) continue;
 
-                // Get stream info on first decode
                 if (!info_obtained && dec_info.sample_rate > 0) {
                     src_rate = dec_info.sample_rate;
                     src_ch = dec_info.channel;
@@ -298,7 +328,6 @@ void SdCardPlayer::TaskLoop() {
                 int samples = frame.decoded_size / sizeof(int16_t);
                 auto* pcm = reinterpret_cast<int16_t*>(frame.buffer);
 
-                // Resample if needed
                 std::vector<int16_t> resampled;
                 const int16_t* src_pcm = pcm;
                 int src_samples = samples;
@@ -308,7 +337,6 @@ void SdCardPlayer::TaskLoop() {
                     src_samples = resampled.size();
                 }
 
-                // Mix stereo to mono
                 std::vector<int16_t> mono;
                 const int16_t* out_pcm = src_pcm;
                 int out_samples = src_samples;
@@ -323,10 +351,10 @@ void SdCardPlayer::TaskLoop() {
                 codec->OutputData(output);
             }
 
-            // Trim acc_buf to prevent unbounded growth on long files
-            if (acc_buf.size() > 65536) {
-                ESP_LOGW(TAG, "acc_buf too large (%u), discarding", acc_buf.size());
-                acc_buf.clear();
+            // Periodic trim to prevent unbounded growth
+            if (offset > 65536) {
+                acc_buf.erase(acc_buf.begin(), acc_buf.begin() + offset);
+                offset = 0;
             }
 
             vTaskDelay(1);
@@ -335,11 +363,17 @@ void SdCardPlayer::TaskLoop() {
         esp_mp3_dec_close(mp3_handle);
         fclose(fp);
 
+        ESP_LOGI(TAG, "File done: decodes=%d errors=%d", decode_count, error_count);
+
         // Advance to next file (unless switched by user)
         if (running_ && !switch_requested_) {
             current_index_ = (current_index_ + 1) % file_list_.size();
+            ESP_LOGI(TAG, "Next file: %s", file_list_[current_index_].c_str());
         }
     }
 
+    UBaseType_t stack_watermark = uxTaskGetStackHighWaterMark(nullptr);
+    ESP_LOGI(TAG, "Player exit: running=%d switch=%d stack_free=%lu",
+             running_ ? 1 : 0, switch_requested_ ? 1 : 0, stack_watermark);
     codec->EnableOutput(false);
 }
