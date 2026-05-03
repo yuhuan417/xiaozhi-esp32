@@ -27,10 +27,13 @@ private:
     std::atomic<int> switch_direction_;
     std::atomic<int> current_index_;
     std::vector<std::string> file_list_;
+    std::vector<int> shuffled_order_;
 
     void TaskLoop();
     void ScanFiles();
     void ShowFileInfo();
+    int GetActualIndex() const;
+    const char* GetFilePath(int index) const;
 };
 
 #endif

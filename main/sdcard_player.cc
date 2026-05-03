@@ -7,6 +7,7 @@
 #include <esp_log.h>
 #include <esp_mp3_dec.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <dirent.h>
@@ -77,18 +78,33 @@ void SdCardPlayer::Previous() {
 }
 
 const char* SdCardPlayer::GetCurrentFileName() const {
-    if (file_list_.empty() || current_index_ >= (int)file_list_.size()) return "";
-    return file_list_[current_index_].c_str();
+    int actual = GetActualIndex();
+    if (actual < 0 || actual >= (int)file_list_.size()) return "";
+    return file_list_[actual].c_str();
 }
 
 void SdCardPlayer::ShowFileInfo() {
     auto display = Board::GetInstance().GetDisplay();
-    if (display && !file_list_.empty() && current_index_ < (int)file_list_.size()) {
-        const char* path = file_list_[current_index_].c_str();
+    int actual = GetActualIndex();
+    if (display && !file_list_.empty() && actual < (int)file_list_.size()) {
+        const char* path = file_list_[actual].c_str();
         const char* basename = strrchr(path, '/');
         basename = basename ? basename + 1 : path;
         display->ShowNotification(basename);
     }
+}
+
+int SdCardPlayer::GetActualIndex() const {
+    int idx = current_index_;
+    if (idx >= 0 && idx < (int)shuffled_order_.size()) {
+        return shuffled_order_[idx];
+    }
+    return idx;
+}
+
+const char* SdCardPlayer::GetFilePath(int index) const {
+    if (index < 0 || index >= (int)file_list_.size()) return "";
+    return file_list_[index].c_str();
 }
 
 void SdCardPlayer::ScanFiles() {
@@ -194,6 +210,18 @@ void SdCardPlayer::TaskLoop() {
         return;
     }
 
+    // Shuffle on each entry
+    {
+        int n = (int)file_list_.size();
+        shuffled_order_.resize(n);
+        for (int i = 0; i < n; i++) shuffled_order_[i] = i;
+        for (int i = n - 1; i > 0; i--) {
+            int j = esp_random() % (i + 1);
+            std::swap(shuffled_order_[i], shuffled_order_[j]);
+        }
+        ESP_LOGI(TAG, "Shuffled %d files", n);
+    }
+
     while (running_) {
         if (switch_requested_) {
             int dir = switch_direction_.load();
@@ -205,7 +233,8 @@ void SdCardPlayer::TaskLoop() {
             ShowFileInfo();
         }
 
-        const char* file_path = file_list_[current_index_].c_str();
+        int actual_index = GetActualIndex();
+        const char* file_path = GetFilePath(actual_index);
         ESP_LOGI(TAG, "Playing: %s", file_path);
         ShowFileInfo();
 
@@ -368,7 +397,7 @@ void SdCardPlayer::TaskLoop() {
         // Advance to next file (unless switched by user)
         if (running_ && !switch_requested_) {
             current_index_ = (current_index_ + 1) % file_list_.size();
-            ESP_LOGI(TAG, "Next file: %s", file_list_[current_index_].c_str());
+            ESP_LOGI(TAG, "Next file: %s", GetFilePath(GetActualIndex()));
         }
     }
 
