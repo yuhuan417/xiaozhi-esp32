@@ -13,6 +13,7 @@
 #include "network_radio.h"
 #include "sdcard_player.h"
 #include "simple_ftp_server.h"
+#include "wifi_manager.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -398,6 +399,21 @@ private:
                     this->StopPlayback();
                 });
                 return true;
+            });
+
+        mcp_server.AddTool("self.get_ip",
+            "Show the device IP address on screen. Use this when the user asks 'what is your IP' "
+            "or needs to connect via FTP.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto& wifi = WifiManager::GetInstance();
+                std::string ip = wifi.GetIpAddress();
+                if (ip.empty()) {
+                    GetDisplay()->ShowNotification("未连接网络");
+                    return std::string("Not connected");
+                }
+                GetDisplay()->ShowNotification(("IP: " + ip).c_str());
+                return ip;
             });
     }
 
