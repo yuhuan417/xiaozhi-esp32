@@ -827,6 +827,17 @@ void Application::HandleWakeWordDetectedEvent() {
     } else if (state == kDeviceStateActivating) {
         // Restart the activation check if the wake word is detected during activation
         SetDeviceState(kDeviceStateIdle);
+    } else if (state == kDeviceStateNetworkRadio || state == kDeviceStateSdCardMp3) {
+        // Wake word detected during radio or MP3 playback —
+        // stop the player and go directly into the conversation flow
+        Board::GetInstance().StopAudioPlayer();
+        // StopAudioPlayer has closed the audio channel, so proceed as if from idle
+        audio_service_.EncodeWakeWord();
+        auto wake_word = audio_service_.GetLastWakeWord();
+        SetDeviceState(kDeviceStateConnecting);
+        Schedule([this, wake_word]() {
+            ContinueWakeWordInvoke(wake_word);
+        });
     }
 }
 
@@ -933,14 +944,14 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus("📻 网络收音机");
             display->SetEmotion("neutral");
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(false);
+            audio_service_.EnableWakeWordDetection(true);
             audio_service_.DisablePowerManagement();
             break;
         case kDeviceStateSdCardMp3:
             display->SetStatus("🎵 SD卡MP3");
             display->SetEmotion("neutral");
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(false);
+            audio_service_.EnableWakeWordDetection(true);
             audio_service_.DisablePowerManagement();
             break;
         default:

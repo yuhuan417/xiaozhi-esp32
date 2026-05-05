@@ -113,6 +113,7 @@ private:
         network_radio_.Stop();
         power_save_timer_->SetEnabled(true);
         auto& app = Application::GetInstance();
+        app.GetAudioService().ResetDecoder();
         app.CloseAudioChannel();
         app.SetDeviceState(kDeviceStateIdle);
         GetDisplay()->ShowNotification("对话模式");
@@ -158,6 +159,7 @@ private:
         sdcard_player_.Stop();
         power_save_timer_->SetEnabled(true);
         auto& app = Application::GetInstance();
+        app.GetAudioService().ResetDecoder();
         app.CloseAudioChannel();
         app.SetDeviceState(kDeviceStateIdle);
         GetDisplay()->ShowNotification("对话模式");
@@ -315,6 +317,7 @@ private:
         // Close any active audio channel and abort conversation
         app.AbortSpeaking(kAbortReasonNone);
         app.CloseAudioChannel();
+        app.GetAudioService().ResetDecoder();
 
         if (network_radio_.IsRunning()) {
             network_radio_.Stop();
@@ -341,6 +344,7 @@ private:
         // Close any active audio channel and abort conversation
         app.AbortSpeaking(kAbortReasonNone);
         app.CloseAudioChannel();
+        app.GetAudioService().ResetDecoder();
 
         if (network_radio_.IsRunning()) {
             network_radio_.Stop();
