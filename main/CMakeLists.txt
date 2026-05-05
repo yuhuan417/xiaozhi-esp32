@@ -38,6 +38,7 @@ set(SOURCES "audio/audio_codec.cc"
             "assets.cc"
             "network_radio.cc"
             "sdcard_player.cc"
+            "audio/simple_ftp_server.cc"
             "main.cc"
             )
 

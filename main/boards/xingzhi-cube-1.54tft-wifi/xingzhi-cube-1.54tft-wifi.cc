@@ -12,6 +12,7 @@
 #include "mcp_server.h"
 #include "network_radio.h"
 #include "sdcard_player.h"
+#include "simple_ftp_server.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -37,6 +38,7 @@ private:
     PowerManager* power_manager_;
     NetworkRadio network_radio_;
     SdCardPlayer sdcard_player_;
+    SimpleFtpServer ftp_server_;
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
     bool is_sdcard_found_ = false;
@@ -420,6 +422,15 @@ public:
         InitializeSDcardSpi();
         GetBacklight()->RestoreBrightness();
         InitializeTools();
+    }
+
+    void OnNetworkEvent(NetworkEvent event, const std::string& data) override {
+        WifiBoard::OnNetworkEvent(event, data);
+#ifdef CONFIG_FTP_SERVER_ENABLED
+        if (event == NetworkEvent::Connected && is_sdcard_found_ && !ftp_server_.IsRunning()) {
+            ftp_server_.Start(CONFIG_FTP_SERVER_PORT, SD_MOUNT_POINT);
+        }
+#endif
     }
 
     virtual AudioCodec* GetAudioCodec() override {

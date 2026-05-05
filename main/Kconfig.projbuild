@@ -825,6 +825,20 @@ config USE_AUDIO_DEBUGGER
     help
         Enable audio debugger, send audio data through UDP to the host machine
 
+config FTP_SERVER_ENABLED
+    bool "Enable FTP Server for SD card file management"
+    default y
+    help
+        Start an FTP server on the SD card mount point after WiFi connects.
+        Allows drag-and-drop file management from Windows Explorer, Finder, etc.
+
+config FTP_SERVER_PORT
+    int "FTP Server Port"
+    default 21
+    depends on FTP_SERVER_ENABLED
+    help
+        TCP port for the FTP control connection.
+
 menu "WiFi Configuration Method"
     help
         WiFi Configuration Method Selection
