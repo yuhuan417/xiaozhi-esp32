@@ -512,6 +512,10 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            auto state = GetDeviceState();
+            if (state == kDeviceStateNetworkRadio || state == kDeviceStateSdCardMp3) {
+                return;
+            }
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -525,6 +529,10 @@ void Application::InitializeProtocol() {
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
                 Schedule([this]() {
+                    auto state = GetDeviceState();
+                    if (state == kDeviceStateNetworkRadio || state == kDeviceStateSdCardMp3) {
+                        return;
+                    }
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
@@ -675,7 +683,7 @@ void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
 
     // Ignore toggle chat while in network radio mode
-    if (state == kDeviceStateNetworkRadio) {
+    if (state == kDeviceStateNetworkRadio || state == kDeviceStateSdCardMp3) {
         return;
     }
 
@@ -793,8 +801,6 @@ void Application::HandleWakeWordDetectedEvent() {
 
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
-            // Schedule to let the state change be processed first (UI update),
-            // then continue with OpenAudioChannel which may block for ~1 second
             Schedule([this, wake_word]() {
                 ContinueWakeWordInvoke(wake_word);
             });
@@ -930,6 +936,13 @@ void Application::HandleStateChangedEvent() {
             audio_service_.EnableWakeWordDetection(false);
             audio_service_.DisablePowerManagement();
             break;
+        case kDeviceStateSdCardMp3:
+            display->SetStatus("🎵 SD卡MP3");
+            display->SetEmotion("neutral");
+            audio_service_.EnableVoiceProcessing(false);
+            audio_service_.EnableWakeWordDetection(false);
+            audio_service_.DisablePowerManagement();
+            break;
         default:
             // Do nothing
             break;
@@ -949,6 +962,12 @@ void Application::AbortSpeaking(AbortReason reason) {
     aborted_ = true;
     if (protocol_) {
         protocol_->SendAbortSpeaking(reason);
+    }
+}
+
+void Application::CloseAudioChannel() {
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->CloseAudioChannel();
     }
 }
 

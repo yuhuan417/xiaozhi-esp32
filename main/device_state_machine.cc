@@ -27,7 +27,7 @@ DeviceStateMachine::DeviceStateMachine() {
 }
 
 const char* DeviceStateMachine::GetStateName(DeviceState state) {
-    if (state >= 0 && state <= kDeviceStateNetworkRadio) {
+    if (state >= 0 && state <= kDeviceStateSdCardMp3) {
         return STATE_STRINGS[state];
     }
     return STATE_STRINGS[kDeviceStateNetworkRadio + 1];

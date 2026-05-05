@@ -9,6 +9,7 @@
 #include "led/single_led.h"
 #include "assets/lang_config.h"
 #include "power_manager.h"
+#include "mcp_server.h"
 #include "network_radio.h"
 #include "sdcard_player.h"
 
@@ -111,7 +112,9 @@ private:
     void ExitRadioMode() {
         network_radio_.Stop();
         power_save_timer_->SetEnabled(true);
-        Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+        auto& app = Application::GetInstance();
+        app.CloseAudioChannel();
+        app.SetDeviceState(kDeviceStateIdle);
         GetDisplay()->ShowNotification("对话模式");
     }
 
@@ -154,7 +157,9 @@ private:
     void ExitSdCardMp3Mode() {
         sdcard_player_.Stop();
         power_save_timer_->SetEnabled(true);
-        Application::GetInstance().SetDeviceState(kDeviceStateIdle);
+        auto& app = Application::GetInstance();
+        app.CloseAudioChannel();
+        app.SetDeviceState(kDeviceStateIdle);
         GetDisplay()->ShowNotification("对话模式");
     }
 
@@ -192,14 +197,10 @@ private:
 
         boot_button_.OnLongPress([this]() {
             power_save_timer_->WakeUp();
-            // Three-mode cycle: 对话 → 网络电台 → SD卡MP3 → 对话
             if (network_radio_.IsRunning()) {
                 ExitRadioMode();
-                EnterSdCardMp3Mode();
             } else if (sdcard_player_.IsRunning()) {
                 ExitSdCardMp3Mode();
-            } else {
-                EnterRadioMode();
             }
         });
 
@@ -308,6 +309,100 @@ private:
         is_sdcard_found_ = true;
     }
 
+    void DoEnterRadioMode(int station_index) {
+        auto& app = Application::GetInstance();
+
+        // Close any active audio channel and abort conversation
+        app.AbortSpeaking(kAbortReasonNone);
+        app.CloseAudioChannel();
+
+        if (network_radio_.IsRunning()) {
+            network_radio_.Stop();
+        }
+        if (sdcard_player_.IsRunning()) {
+            sdcard_player_.Stop();
+        }
+
+        app.SetDeviceState(kDeviceStateIdle);
+        app.SetDeviceState(kDeviceStateNetworkRadio);
+        power_save_timer_->SetEnabled(false);
+        network_radio_.Start(station_index);
+        GetDisplay()->ShowNotification("📻 网络收音机");
+    }
+
+    void DoEnterSdCardMp3Mode() {
+        if (!is_sdcard_found_) {
+            GetDisplay()->ShowNotification("未检测到SD卡");
+            return;
+        }
+
+        auto& app = Application::GetInstance();
+
+        // Close any active audio channel and abort conversation
+        app.AbortSpeaking(kAbortReasonNone);
+        app.CloseAudioChannel();
+
+        if (network_radio_.IsRunning()) {
+            network_radio_.Stop();
+        }
+        if (sdcard_player_.IsRunning()) {
+            sdcard_player_.Stop();
+        }
+        app.SetDeviceState(kDeviceStateIdle);
+        app.SetDeviceState(kDeviceStateSdCardMp3);
+        power_save_timer_->SetEnabled(false);
+        sdcard_player_.Start();
+        GetDisplay()->ShowNotification("🎵 SD卡MP3");
+    }
+
+    void InitializeTools() {
+        auto& mcp_server = McpServer::GetInstance();
+
+        mcp_server.AddTool("self.audio_player.start_radio",
+            "Start playing network radio. station_index selects a preset station (0-based).",
+            PropertyList({
+                Property("station_index", kPropertyTypeInteger, 0)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                int station_index = properties["station_index"].value<int>();
+                auto& app = Application::GetInstance();
+                app.Schedule([this, station_index]() {
+                    this->DoEnterRadioMode(station_index);
+                });
+                return true;
+            });
+
+        mcp_server.AddTool("self.audio_player.start_mp3",
+            "Start playing MP3 files from the SD card.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto& app = Application::GetInstance();
+                app.Schedule([this]() {
+                    this->DoEnterSdCardMp3Mode();
+                });
+                return true;
+            });
+
+        mcp_server.AddTool("self.audio_player.stop",
+            "Stop radio or MP3 playback and return to voice chat mode.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                auto& app = Application::GetInstance();
+                app.Schedule([this]() {
+                    this->StopPlayback();
+                });
+                return true;
+            });
+    }
+
+    void StopPlayback() {
+        if (network_radio_.IsRunning()) {
+            ExitRadioMode();
+        } else if (sdcard_player_.IsRunning()) {
+            ExitSdCardMp3Mode();
+        }
+    }
+
 public:
     XINGZHI_CUBE_1_54TFT_WIFI() :
         boot_button_(BOOT_BUTTON_GPIO),
@@ -320,6 +415,7 @@ public:
         InitializeSt7789Display();
         InitializeSDcardSpi();
         GetBacklight()->RestoreBrightness();
+        InitializeTools();
     }
 
     virtual AudioCodec* GetAudioCodec() override {
@@ -348,6 +444,8 @@ public:
         level = power_manager_->GetBatteryLevel();
         return true;
     }
+
+    void StopAudioPlayer() override { StopPlayback(); }
 
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
         if (level != PowerSaveLevel::LOW_POWER) {
