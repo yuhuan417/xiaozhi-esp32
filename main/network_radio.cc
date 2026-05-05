@@ -228,12 +228,12 @@ static void hls_download_task(void* arg) {
         if (!fetch_url_to_buffer(seg_url.c_str(), seg_result, 15000))
             continue;
 
-        ESP_LOGI(TAG, "DL: seg %zu size=%u queue_bytes=%zu",
+        ESP_LOGD(TAG, "DL: seg %zu size=%u queue_bytes=%zu",
                  seg_idx, seg_result.data.size(), ctx->queue->total_bytes());
 
         if (seg_result.data.size() >= 16) {
             auto& d = seg_result.data;
-            ESP_LOGI(TAG, "DL: first16=%02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x",
+            ESP_LOGD(TAG, "DL: first16=%02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x %02x%02x",
                      d[0],d[1], d[2],d[3], d[4],d[5], d[6],d[7],
                      d[8],d[9], d[10],d[11], d[12],d[13], d[14],d[15]);
         }
@@ -382,7 +382,7 @@ void NetworkRadio::TaskLoop() {
                 vTaskDelay(pdMS_TO_TICKS(2000));
                 continue;
             }
-            ESP_LOGI(TAG, "Direct stream: %u bytes", stream_result.data.size());
+            ESP_LOGD(TAG, "Direct stream: %u bytes", stream_result.data.size());
 
             void* aac_handle = nullptr;
             esp_aac_dec_cfg_t aac_cfg;
@@ -481,7 +481,7 @@ void NetworkRadio::TaskLoop() {
             while (running_ && !switch_requested_) {
                 std::vector<uint8_t> segment;
                 if (queue.pop(segment)) {
-                    ESP_LOGI(TAG, "DEC: got segment size=%u queue_bytes=%zu",
+                    ESP_LOGD(TAG, "DEC: got segment size=%u queue_bytes=%zu",
                              segment.size(), queue.total_bytes());
 
                     size_t offset = 0;
