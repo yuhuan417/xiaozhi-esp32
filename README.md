@@ -12,6 +12,17 @@ As a voice interaction entry, the XiaoZhi AI chatbot leverages the AI capabiliti
 
 <img src="docs/mcp-based-graph.jpg" alt="Control everything via MCP" width="320">
 
+## Recent Updates
+
+The items below summarize fork-specific features added after this repository diverged from upstream:
+
+- Added network radio playback on supported boards, with on-device station switching
+- Added SD card MP3 playback, including shuffle mode and non-ASCII filename support
+- Added MCP audio player tools to start or stop radio and MP3 playback remotely
+- Added wake-word interruption during radio/MP3 playback, so speaking the wake word stops playback and enters conversation directly
+- Added an FTP server for managing files on `/sdcard`
+- Added a `self.get_ip` MCP tool to show the current device IP on screen
+
 ## Version Notes
 
 The current v2 version is incompatible with the v1 partition table, so it is not possible to upgrade from v1 to v2 via OTA. For partition table details, see [partitions/v2/README.md](partitions/v2/README.md).

@@ -12,6 +12,17 @@
 
 <img src="docs/mcp-based-graph.jpg" alt="通过MCP控制万物" width="320">
 
+## 近期更新
+
+下面这部分只总结本仓库自 fork 上游之后，我们自己新增的功能，原有 README 内容继续保留在后面：
+
+- 在支持的板型上新增网络收音机播放，并支持设备端切台
+- 新增 SD 卡 MP3 播放，支持随机播放和中文等非 ASCII 文件名
+- 新增 MCP 音频播放器工具，可远程启动或停止电台和 MP3 播放
+- 新增电台/MP3 播放过程中的唤醒词打断，说出唤醒词即可停播并直接进入对话
+- 新增基于 FTP 的 `/sdcard` 文件管理能力
+- 新增 `self.get_ip` MCP 工具，可在屏幕上显示当前设备 IP
+
 ### 版本说明
 
 当前 v2 版本与 v1 版本分区表不兼容，所以无法从 v1 版本通过 OTA 升级到 v2 版本。分区表说明参见 [partitions/v2/README.md](partitions/v2/README.md)。
